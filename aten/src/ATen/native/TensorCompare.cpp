@@ -5,45 +5,14 @@
 #include <ATen/NativeFunctions.h>
 #include <ATen/native/ReduceOpsUtils.h>
 #include <c10/util/Exception.h>
-#include <ATen/native/cpu/TensorCompareKernel.h>
-#include <ATen/native/cpu/Loops.h>
+#include <ATen/native/TensorCompare.h>
 #include <ATen/NamedTensorUtils.h>
-
-namespace {
-template <typename scalar_t>
-void where_cpu(
-    at::Tensor& ret,
-    const at::Tensor& condition,
-    const at::Tensor& self,
-    const at::Tensor& other) {
-  auto iter = at::TensorIterator();
-  iter.set_check_mem_overlap(true);
-  iter.add_output(ret);
-  iter.add_input(condition);
-  iter.add_input(self);
-  iter.add_input(other);
-  iter.dont_compute_common_dtype();
-  iter.build();
-  if (condition.scalar_type() == at::ScalarType::Byte) {
-    at::native::cpu_kernel(
-      iter,
-      [=](uint8_t cond_val, scalar_t self_val, scalar_t other_val) -> scalar_t {
-        return cond_val ? self_val : other_val;
-      });
-  } else {
-    at::native::cpu_kernel(
-      iter,
-      [=](bool cond_val, scalar_t self_val, scalar_t other_val) -> scalar_t {
-        return cond_val ? self_val : other_val;
-      });
-  }
-}
-} // namespace
 
 namespace at { namespace native {
 
-DEFINE_DISPATCH(max_kernel);
-DEFINE_DISPATCH(min_kernel);
+DEFINE_DISPATCH(where_kernel);
+DEFINE_DISPATCH(max_stub);
+DEFINE_DISPATCH(min_stub);
 
 bool allclose(const Tensor& self, const Tensor& other, double rtol, double atol, bool equal_nan) {
   return at::isclose(self, other, rtol, atol, equal_nan).all().item<uint8_t>();
@@ -131,10 +100,14 @@ bool is_nonzero(const Tensor& self) {
   } else if (localScalar.isBoolean()) {
     return localScalar.to<bool>();
   }
-  AT_ERROR("expected non-Tensor backed scalar");
+  AT_ERROR("expected non-Tensor backend scalar");
 }
 
 Tensor where(const Tensor& condition, const Tensor& self, const Tensor& other) {
+  TORCH_CHECK(condition.device() == self.device() && self.device() == other.device(),
+              "expected condition, x and y to be on the same device, but condition is on ",
+              condition.device(), " and x and y are on ", self.device(), " and ", other.device(),
+              " respectively");
   if (condition.scalar_type() != ScalarType::Byte && condition.scalar_type() != ScalarType::Bool) {
     AT_ERROR("Expected condition to have ScalarType Byte, but got ScalarType ",
                   toString(condition.scalar_type()));
@@ -148,12 +121,18 @@ std::vector<Tensor> where(const Tensor& condition) {
   return condition.nonzero_numpy();
 }
 
-Tensor _s_where_cpu(const Tensor& condition, const Tensor& self, const Tensor& other) {
+Tensor _s_where(const Tensor& condition, const Tensor& self, const Tensor& other) {
   TORCH_CHECK(self.dtype() == other.dtype(), "expected scalar type ", self.dtype(), " but found ", other.dtype());
   Tensor ret = at::empty(self.sizes(), self.options());
-  AT_DISPATCH_ALL_TYPES_AND_COMPLEX(ret.scalar_type(), "where_cpu", [&] {
-    where_cpu<scalar_t>(ret, condition, self, other);
-  });
+  auto iter = at::TensorIterator();
+  iter.set_check_mem_overlap(true);
+  iter.add_output(ret);
+  iter.add_input(condition);
+  iter.add_input(self);
+  iter.add_input(other);
+  iter.dont_compute_common_dtype();
+  iter.build();
+  where_kernel(iter.device_type(), iter, condition.scalar_type());
   return ret;
 }
 
@@ -187,17 +166,14 @@ std::tuple<Tensor &,Tensor &> mode_out(Tensor& values, Tensor& indices,
 
 std::tuple<Tensor &,Tensor &> _max_out_cpu(Tensor& max, Tensor& max_indices,
                                         const Tensor& self, int64_t dim, bool keepdim) {
-  if (self.is_contiguous() && max.is_contiguous() && max_indices.is_contiguous()) {
-    _dimreduce_setup(max, self, dim);
-    _dimreduce_setup(max_indices, self, dim);
-    max_kernel(kCPU, max, max_indices, self, dim);
-    if (!keepdim) {
-      max.squeeze_(dim);
-      max_indices.squeeze_(dim);
-    }
-    return std::tuple<Tensor &,Tensor &>{max, max_indices};
-  }
-  return at::_max_out(max, max_indices, self, dim, keepdim);
+  max_stub(kCPU, max, max_indices, self, dim, keepdim);
+  return std::tuple<Tensor &,Tensor &>{max, max_indices};
+}
+
+std::tuple<Tensor, Tensor> _max_cpu(const Tensor& self, int64_t dim, bool keepdim) {
+  Tensor max_indices = at::empty({0}, self.options().dtype(kLong));
+  Tensor max = at::empty({0}, self.options());
+  return at::native::_max_out_cpu(max, max_indices, self, dim, keepdim);
 }
 
 std::tuple<Tensor, Tensor> max(const Tensor& self, int64_t dim, bool keepdim) {
@@ -208,7 +184,7 @@ std::tuple<Tensor, Tensor> max(const Tensor& self, int64_t dim, bool keepdim) {
     // TODO: qscheme
     return std::tuple<Tensor, Tensor>(at::_make_per_tensor_quantized_tensor(max, self.q_scale(), self.q_zero_point()), max_indices);
   } else {
-    Tensor  max = at::empty({0}, self.options());
+    Tensor max = at::empty({0}, self.options());
     return at::native::max_out(max, max_indices, self, dim, keepdim);
   }
 }
@@ -231,11 +207,7 @@ static std::tuple<Tensor &,Tensor &> max_out_impl(Tensor& max, Tensor& max_indic
     max_indices.resize_({}).fill_(0);
     return std::forward_as_tuple(max, max_indices);
   } else {
-    if (self.is_cuda()) {
-      return at::_max_out(max, max_indices, self, dim, keepdim);
-    } else {
-      return _max_out_cpu(max, max_indices, self, dim, keepdim);
-    }
+    return at::_max_out(max, max_indices, self, dim, keepdim);
   }
 }
 
@@ -252,17 +224,14 @@ std::tuple<Tensor&,Tensor&> max_out(Tensor& max, Tensor& max_indices,
 
 std::tuple<Tensor &,Tensor &> _min_out_cpu(Tensor& min, Tensor& min_indices,
                                         const Tensor& self, int64_t dim, bool keepdim) {
-  if (self.is_contiguous() && min.is_contiguous() && min_indices.is_contiguous()) {
-    _dimreduce_setup(min, self, dim);
-    _dimreduce_setup(min_indices, self, dim);
-    min_kernel(kCPU, min, min_indices, self, dim);
-    if (!keepdim) {
-      min.squeeze_(dim);
-      min_indices.squeeze_(dim);
-    }
-    return std::tuple<Tensor &,Tensor &>{min, min_indices};
-  }
-  return at::_min_out(min, min_indices, self, dim, keepdim);
+  min_stub(kCPU, min, min_indices, self, dim, keepdim);
+  return std::tuple<Tensor &,Tensor &>{min, min_indices};
+}
+
+std::tuple<Tensor, Tensor> _min_cpu(const Tensor& self, int64_t dim, bool keepdim) {
+  Tensor min_indices = at::empty({0}, self.options().dtype(kLong));
+  Tensor min = at::empty({0}, self.options());
+  return at::native::_min_out_cpu(min, min_indices, self, dim, keepdim);
 }
 
 std::tuple<Tensor, Tensor> min(const Tensor& self, int64_t dim, bool keepdim) {
@@ -295,11 +264,7 @@ static std::tuple<Tensor &,Tensor &> min_out_impl(Tensor& min, Tensor& min_indic
     min_indices.resize_({}).fill_(0);
     return std::forward_as_tuple(min, min_indices);
   } else {
-    if (self.is_cuda()) {
-      return at::_min_out(min, min_indices, self, dim, keepdim);
-    } else {
-      return _min_out_cpu(min, min_indices, self, dim, keepdim);
-    }
+    return at::_min_out(min, min_indices, self, dim, keepdim);
   }
 }
 

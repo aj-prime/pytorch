@@ -24,7 +24,7 @@ if NOT "%BUILD_ENVIRONMENT%"=="" (
     call conda install -y -q -c conda-forge cmake
 )
 :: The version is fixed to avoid flakiness: https://github.com/pytorch/pytorch/issues/31136
-pip install ninja future "hypothesis==4.53.2" "librosa>=0.6.2" psutil pillow
+pip install ninja future "hypothesis==4.53.2" "librosa>=0.6.2" psutil pillow unittest-xml-reporting
 :: No need to install faulthandler since we only test Python >= 3.6 on Windows
 :: faulthandler is builtin since Python 3.3
 
@@ -35,7 +35,11 @@ goto cuda_build_end
 :cuda_build_9
 
 pushd .
-call "C:\Program Files (x86)\Microsoft Visual Studio\%VC_YEAR%\%VC_PRODUCT%\VC\Auxiliary\Build\vcvarsall.bat" x64
+if "%VC_VERSION%" == "" (
+    call "C:\Program Files (x86)\Microsoft Visual Studio\%VC_YEAR%\%VC_PRODUCT%\VC\Auxiliary\Build\vcvarsall.bat" x64
+) else (
+    call "C:\Program Files (x86)\Microsoft Visual Studio\%VC_YEAR%\%VC_PRODUCT%\VC\Auxiliary\Build\vcvarsall.bat" x64 -vcvars_ver=%VC_VERSION%
+)
 @echo on
 popd
 
@@ -47,7 +51,11 @@ goto cuda_build_common
 :cuda_build_10
 
 pushd .
-call "C:\Program Files (x86)\Microsoft Visual Studio\%VC_YEAR%\%VC_PRODUCT%\VC\Auxiliary\Build\vcvarsall.bat" x64 -vcvars_ver=%VC_VERSION%
+if "%VC_VERSION%" == "" (
+    call "C:\Program Files (x86)\Microsoft Visual Studio\%VC_YEAR%\%VC_PRODUCT%\VC\Auxiliary\Build\vcvarsall.bat" x64
+) else (
+    call "C:\Program Files (x86)\Microsoft Visual Studio\%VC_YEAR%\%VC_PRODUCT%\VC\Auxiliary\Build\vcvarsall.bat" x64 -vcvars_ver=%VC_VERSION%
+)
 @echo on
 popd
 

@@ -15,7 +15,7 @@ Tensor & masked_fill__cuda(Tensor& self, const Tensor & mask, Scalar value) {
   // As we dispatch on self and TH is type-checked, we need different definitions.
   // This can be fixed by moving to ATen.
   if (b_mask.dtype() == at::ScalarType::Byte) {
-    AT_WARN("masked_fill_ received a mask with dtype torch.uint8, this behavior is now deprecated," \
+    TORCH_WARN("masked_fill_ received a mask with dtype torch.uint8, this behavior is now deprecated," \
             "please use a mask with dtype torch.bool instead.");
     legacy::cuda::_th_masked_fill_(self, b_mask, value);
   } else {
@@ -35,7 +35,7 @@ Tensor & masked_fill__cuda(Tensor& self, const Tensor & mask, const Tensor & val
   // As we dispatch on self and TH is type-checked, we need different definitions.
   // This can be fixed by moving to ATen.
   if (b_mask.dtype() == at::ScalarType::Byte) {
-    AT_WARN("masked_fill_ received a mask with dtype torch.uint8, this behavior is now deprecated," \
+    TORCH_WARN("masked_fill_ received a mask with dtype torch.uint8, this behavior is now deprecated," \
             "please use a mask with dtype torch.bool instead.");
     legacy::cuda::_th_masked_fill_(self, b_mask, value.item());
   } else {
@@ -51,7 +51,7 @@ Tensor & masked_scatter__cuda(Tensor& self, const Tensor & mask, const Tensor & 
   // As we dispatch on self and TH is type-checked, we need different definitions.
   // This can be fixed by moving to ATen.
   if (b_mask.dtype() == at::ScalarType::Byte) {
-    AT_WARN("masked_scatter_ received a mask with dtype torch.uint8, this behavior is now deprecated," \
+    TORCH_WARN("masked_scatter_ received a mask with dtype torch.uint8, this behavior is now deprecated," \
             "please use a mask with dtype torch.bool instead.");
     return legacy::cuda::_th_masked_scatter_(self, b_mask, source);
   } else {
@@ -62,7 +62,7 @@ Tensor & masked_scatter__cuda(Tensor& self, const Tensor & mask, const Tensor & 
 Tensor masked_select_cuda(const Tensor & self, const Tensor & mask) {
   namedinference::compute_broadcast_outnames(self, mask);
   if (mask.dtype() == at::ScalarType::Byte) {
-    AT_WARN("masked_select received a mask with dtype torch.uint8, this behavior is now deprecated," \
+    TORCH_WARN("masked_select received a mask with dtype torch.uint8, this behavior is now deprecated," \
             "please use a mask with dtype torch.bool instead.");
     return legacy::cuda::_th_masked_select(self, mask);
   } else {
@@ -80,11 +80,13 @@ Tensor & masked_select_out_cuda(Tensor & result, const Tensor & self, const Tens
 }
 
 Tensor & gather_out_cuda(Tensor & result, const Tensor & self, int64_t dim, const Tensor & index, bool sparse_grad) {
+  result.resize_(index.sizes());
   return legacy::cuda::_th_gather_out(result, self, dim, index);
 }
 
 Tensor gather_cuda(const Tensor & self, int64_t dim, const Tensor & index, bool sparse_grad) {
-  return legacy::cuda::_th_gather(self, dim, index);
+  Tensor result = at::empty({0}, self.options());
+  return gather_out_cuda(result, self, dim, index, sparse_grad);
 }
 
 }} // namespace at::native

@@ -84,11 +84,11 @@ case ScalarType::${ScalarName}: {
 # In this case, it will be called for all backends, but can be overwritten on a
 # per backend basis.
 NATIVE_DISPATCH_DECLARATION = CodeTemplate("""\
-${return_type} ${api_name}(${type_method_formals});
+${return_type} ${type_wrapper_name}(${type_method_formals});
 """)
 
 NATIVE_DISPATCH_DEFINITION_DEFAULT = CodeTemplate("""\
-${return_type} ${api_name}(${type_method_formals}) {
+${return_type} ${type_wrapper_name}(${type_method_formals}) {
     ${named_guard_declaration}
     ${device_guard_declaration}
     ${return_call} at::native::${native_type_method_dispatch}(${native_actuals});
@@ -96,41 +96,37 @@ ${return_type} ${api_name}(${type_method_formals}) {
 """)
 
 NATIVE_DISPATCH_DEFINITION_BACKEND = CodeTemplate("""\
-${return_type} ${api_name}(${type_method_formals}) {
+${return_type} ${type_wrapper_name}(${type_method_formals}) {
     ${named_guard_declaration}
     ${device_guard_declaration}
     ${return_call} at::native::${native_type_method_dispatch}(${native_actuals});
 }
 """)
 
+# A schema registration specifies alias analysis for an operator, but doesn't
+# actually provide an implementation.  Although our registration API allows you
+# to specify all of this information at a function registration site, it's
+# better to do it once at a schema registration so that we don't have to
+# repeat ourselves everywhere else.
+SCHEMA_REGISTRATION = CodeTemplate("""\
+.def("${schema_string}")
+""")
+
 DEFAULT_UNBOXEDONLY_FUNCTION_REGISTRATION = CodeTemplate("""\
-.op(torch::RegisterOperators::options()
-  .schema("${schema_string}")
-  .impl_unboxedOnlyCatchAllKernel<${return_type} (${formals_types}), &TypeDefault::${api_name}>()
-  .aliasAnalysis(c10::AliasAnalysisKind::FROM_SCHEMA))
+.impl("${operator_name_with_overload}",
+      CppFunction::makeUnboxedOnly(TypeDefault::${type_wrapper_name}))
 """)
 BACKEND_UNBOXEDONLY_FUNCTION_REGISTRATION = CodeTemplate("""\
-.op(torch::RegisterOperators::options()
-  .schema("${schema_string}")
-  .impl_unboxedOnlyKernel<${return_type} (${formals_types}), &${Type}::${api_name}>(DispatchKey::${Backend}TensorId)
-  .aliasAnalysis(c10::AliasAnalysisKind::FROM_SCHEMA))
+.impl("${operator_name_with_overload}", torch::dispatch(
+    DispatchKey::${Backend}TensorId,
+    CppFunction::makeUnboxedOnly(${Type}::${type_wrapper_name})))
 """)
 DEFAULT_FUNCTION_REGISTRATION = CodeTemplate("""\
-.op(torch::RegisterOperators::options()
-  .schema("${schema_string}")
-  .catchAllKernel<${return_type} (${formals_types})>(&TypeDefault::${api_name})
-  .aliasAnalysis(c10::AliasAnalysisKind::FROM_SCHEMA))
-""")
-DEFAULT_SCHEMA_REGISTRATION = CodeTemplate("""\
-.op(torch::RegisterOperators::options()
-  .schema("${schema_string}")
-  .aliasAnalysis(c10::AliasAnalysisKind::FROM_SCHEMA))
+.impl("${operator_name_with_overload}", &TypeDefault::${type_wrapper_name})
 """)
 BACKEND_FUNCTION_REGISTRATION = CodeTemplate("""\
-.op(torch::RegisterOperators::options()
-  .schema("${schema_string}")
-  .kernel<${return_type} (${formals_types})>(DispatchKey::${Backend}TensorId, &${Type}::${api_name})
-  .aliasAnalysis(c10::AliasAnalysisKind::FROM_SCHEMA))
+.impl("${operator_name_with_overload}",
+      torch::dispatch(DispatchKey::${Backend}TensorId, &${Type}::${type_wrapper_name}))
 """)
 
 # add non-virtual declaration to TensorBody.h
@@ -178,11 +174,12 @@ static inline ${return_type} ${api_name}(${formals}) {
 # the time you get to the implementation.
 STATIC_DISPATCH_FUNCTION_DEFAULT_BODY = CodeTemplate("""\
 at::AutoNonVariableTypeMode _var_guard(true);
-${return_call} TypeDefault::${native_type_method_dispatch}(${native_arguments});
+${return_call} TypeDefault::${type_wrapper_name}(${native_arguments});
 """)
 STATIC_DISPATCH_FUNCTION_SWITCH_BODY = CodeTemplate("""\
 at::AutoNonVariableTypeMode _var_guard(true);
-switch(dispatchKeyToBackend(c10::impl::dispatchTypeId(${key_set}, c10::DispatchKeySet(c10::DispatchKeySet::FULL)))) {
+switch(dispatchKeyToBackend(c10::impl::dispatchTypeId(${key_set},
+                            c10::DispatchKeySet(c10::DispatchKeySet::FULL).remove(DispatchKey::BackendSelect)))) {
     ${static_dispatch_function_switches}
     default:
         AT_ERROR("${api_name} not implemented for ", at::toString(${key_set}));
@@ -190,7 +187,7 @@ switch(dispatchKeyToBackend(c10::impl::dispatchTypeId(${key_set}, c10::DispatchK
 """)
 STATIC_DISPATCH_FUNCTION_SWITCH_STATEMENT = CodeTemplate("""\
 case Backend::${backend}:
-    ${return_call} ${backend}Type::${api_name}(${native_arguments});
+    ${return_call} ${backend}Type::${type_wrapper_name}(${native_arguments});
     break;
 """)
 
@@ -245,7 +242,7 @@ scalar_types = [
     ('BFloat16', 'BFloat16', 'BFloat16AccrealNotDefined', True),
 ]
 
-static_dispatch_backends = ['CPU', 'QuantizedCPU', 'SparseCPU']
+static_dispatch_backends = ['CPU', 'QuantizedCPU']
 
 
 class NYIError(Exception):
@@ -262,8 +259,6 @@ TYPE_FORMAL_GENERIC = {
     'THByteTensor*': 'Tensor &',
     'THIndexTensor*': 'Tensor &',
     'THBoolTensor*': 'Tensor &',
-    'THStorage*': 'Storage',
-    'THGenerator*': 'Generator *',
     'IntArrayRefSize': 'IntArrayRef',
     'accreal': 'Scalar',
     'real': 'Scalar',
@@ -275,8 +270,6 @@ DYNAMIC_TYPE = {
     'THByteTensor*': 'ByteTensor',
     'THBoolTensor*': 'BoolTensor',
     'THIndexTensor*': 'IndexTensor',
-    'THStorage*': 'Storage',
-    'THGenerator*': 'Generator*',
     'IntArrayRefSize': 'IntArrayRef',
     'accreal': 'accreal',
     'real': 'real',
@@ -319,13 +312,6 @@ CHECKED_CAST = {
             'checked_dense_tensor_unwrap('
             '${arg_name}, "${arg_name}", ${arg_pos}, "${api_name}", ${null_okay}, '
             'DeviceType::${DeviceType}, ScalarType::Long)'),
-    'THStorage*':
-        CodeTemplate(
-            'checked_storage('
-            '${arg_name}, "${arg_name}", ${arg_pos}, '
-            # We're punning here (Backend and DeviceType constructors coincide)
-            # but DeviceType is the correct way to classify storages
-            'DeviceType::${Backend}, at::scalarTypeToTypeMeta(${scalar_type}))'),
     # This is a cast done via direct-construction
     'IntArrayRefStride': CodeTemplate('at::IntArrayRef ${result_name} = get_intlist_stride_th(${arg_name});'),
     'real': CodeTemplate('${arg_name}.to${ScalarName}()'),
@@ -341,7 +327,6 @@ CHECKED_USE = {
     'THIndexTensor*': '{}_',
     'THByteTensor*': '{}_',
     'THBoolTensor*': '{}_',
-    'THStorage*': '{}_.unsafeGetStorageImpl()',
     'TensorList': "{0}_.data(), {0}_.size()",
 }
 
@@ -429,7 +414,6 @@ THFormal = TypedDict('THFormal', {
     # Broadcast is originally a str but gets unwrapped to a List or Dict in-place
     'broadcast': Any,
     'resize': str,
-    'cpu_zero': bool,
     'zero': bool,
 }, total=False)
 
@@ -486,6 +470,11 @@ NNBuffer = TypedDict('NNBuffer', {
 FunctionOption = TypedDict('FunctionOption', {
     'actuals': List[str],
     'api_name': str,
+    # Like api_name, but it is the name of the internal
+    # CPUType/CUDAType/TypeDefault function that wraps
+    # the actual native call.  This name is NOT user
+    # visible and is mangled with the overload name
+    'type_wrapper_name': str,
     'arguments': List[THFormal],
     'backend_types': Dict[str, List[str]],
     'backends': List[str],
@@ -588,6 +577,7 @@ FunctionCode = NamedTuple('FunctionCode', [
 OpRegistration = NamedTuple('OpRegistration', [
     ('operator_name', str),
     ('registration_code', str),
+    ('schema_registration_code', str),
 ])
 
 
@@ -615,10 +605,7 @@ def named_guard(option, tensors, tensorlists):
         named_conditions.append('at::has_names({})'.format(tensorlist))
     return ("""\
 if ({named_conditions}) {{
-    AT_ERROR(
-        "{op} is not yet supported with named tensors. Please drop names via "
-        "`tensor = tensor.rename(None)`, call the op with an unnamed tensor, "
-        "and set names on the result of the operation.");
+    AT_ERROR("{op}", named_tensors_unsupported_error);
 }}""".format(named_conditions=' || '.join(named_conditions), op=option['name']))
 
 
@@ -1211,23 +1198,29 @@ def create_generic(top_env, declarations):
             abstract = True
             # Having manual_kernel_registration for an abstract method doesn't make sense.
             assert not option['manual_kernel_registration']
+            op_registrations.append(OpRegistration(
+                operator_name=OPERATOR_NAME.substitute(option),
+                registration_code=SCHEMA_REGISTRATION.substitute(option),
+                schema_registration_code=SCHEMA_REGISTRATION.substitute(option)))
         else:
             top_env['type_method_declarations'].append(NATIVE_DISPATCH_DECLARATION.substitute(option))
             top_env['type_method_definitions'].append(NATIVE_DISPATCH_DEFINITION_DEFAULT.substitute(option))
-            if option['manual_kernel_registration']:
+            if not option['manual_kernel_registration']:
                 op_registrations.append(OpRegistration(
                     operator_name=OPERATOR_NAME.substitute(option),
-                    registration_code=DEFAULT_SCHEMA_REGISTRATION.substitute(option)))
-            else:
+                    registration_code=SCHEMA_REGISTRATION.substitute(option),
+                    schema_registration_code=SCHEMA_REGISTRATION.substitute(option)))
                 if option['use_c10_dispatcher'] == 'full':
                     op_registrations.append(OpRegistration(
                         operator_name=OPERATOR_NAME.substitute(option),
-                        registration_code=DEFAULT_FUNCTION_REGISTRATION.substitute(option)))
+                        registration_code=DEFAULT_FUNCTION_REGISTRATION.substitute(option),
+                        schema_registration_code=SCHEMA_REGISTRATION.substitute(option)))
                 else:
                     assert option['use_c10_dispatcher'] == 'unboxed_only'
                     op_registrations.append(OpRegistration(
                         operator_name=OPERATOR_NAME.substitute(option),
-                        registration_code=DEFAULT_UNBOXEDONLY_FUNCTION_REGISTRATION.substitute(option)))
+                        registration_code=DEFAULT_UNBOXEDONLY_FUNCTION_REGISTRATION.substitute(option),
+                        schema_registration_code=SCHEMA_REGISTRATION.substitute(option)))
 
         # generate the at::native function declarations (i.e. what the user will implement)
         if isinstance(type_method_dispatch, dict):
@@ -1350,6 +1343,8 @@ def create_derived(backend_type_env, declarations):
         return [get_argument(env, argument, option)
                 for argument in arguments]
 
+    # TODO: Delete this per https://github.com/pytorch/pytorch/issues/33094
+    # after all TH uses are ported
     def handle_zero_dim(env, option):
         # type: (Environment, FunctionOption) -> List[str]
         zero_dim_dispatch = option.get('zero_dim_dispatch_when_scalar', '')
@@ -1386,11 +1381,7 @@ def create_derived(backend_type_env, declarations):
         if isinstance(resize, str):
             return "{}.resize_({}.sizes());".format(arg['name'], resize)
         else:
-            resize_scalar = arg.get('resize_scalar', False)
-            if resize_scalar:
-                dims = ['{}.dim() == 0 ? 1 : {}.size({})'.format(name, name, dim) for name, dim in resize]
-            else:
-                dims = ['{}.size({})'.format(name, dim) for name, dim in resize]
+            dims = ['{}.size({})'.format(name, dim) for name, dim in resize]
             return "{}.resize_({{ {} }});".format(arg['name'], ','.join(dims))
 
     def handle_call(env, option, cimpl):
@@ -1469,7 +1460,7 @@ def create_derived(backend_type_env, declarations):
                             # defined
                             null_okay = 'true' if nullable_argument(arg) else 'false'
 
-                            # extract the TensorImpl from an existing tensor (or Storage, etc.)
+                            # extract the TensorImpl from an existing tensor
                             check_cast = CHECKED_CAST[arg['type']].substitute(
                                 case_env, arg_name=arg['name'], arg_pos=count,
                                 api_name=option['api_name'], null_okay=null_okay,
@@ -1484,7 +1475,7 @@ def create_derived(backend_type_env, declarations):
                             initializers.append(resize_arg(arg))
 
                         # also special handling where we zero some outputs.
-                        if arg.get('zero', False) or (arg.get('cpu_zero', False) and not is_cuda):
+                        if arg.get('zero', False):
                             initializers.append("{}.zero_();".format(arg['name']))
 
                         # only initialize non-null arguments
@@ -1577,12 +1568,14 @@ def create_derived(backend_type_env, declarations):
                     if option['use_c10_dispatcher'] == 'full':
                         op_registrations.append(OpRegistration(
                             operator_name=OPERATOR_NAME.substitute(option),
-                            registration_code=BACKEND_FUNCTION_REGISTRATION.substitute(env)))
+                            registration_code=BACKEND_FUNCTION_REGISTRATION.substitute(env),
+                            schema_registration_code=SCHEMA_REGISTRATION.substitute(option)))
                     else:
                         assert option['use_c10_dispatcher'] == 'unboxed_only'
                         op_registrations.append(OpRegistration(
                             operator_name=OPERATOR_NAME.substitute(option),
-                            registration_code=BACKEND_UNBOXEDONLY_FUNCTION_REGISTRATION.substitute(env)))
+                            registration_code=BACKEND_UNBOXEDONLY_FUNCTION_REGISTRATION.substitute(env),
+                            schema_registration_code=SCHEMA_REGISTRATION.substitute(option)))
 
     for declaration in declarations:
         for option in declaration['options']:

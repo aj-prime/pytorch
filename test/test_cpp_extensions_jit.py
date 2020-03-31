@@ -365,19 +365,6 @@ class TestCppExtensionJIT(common.TestCase):
         z = module.tanh_add(x, y).cpu()
         self.assertEqual(z, x.tanh() + y.tanh())
 
-    def test_complex_registration(self):
-        module = torch.utils.cpp_extension.load(
-            name="complex_registration_extension",
-            sources="cpp_extensions/complex_registration_extension.cpp",
-            verbose=True,
-        )
-
-        # Make sure that the empty tensor is of the desired shape and type
-        # Refer to https://github.com/pytorch/pytorch/issues/14829
-        t = torch.empty(2, 2, dtype=torch.complex64)
-        self.assertEqual(t.size(), torch.Size([2, 2]))
-        self.assertEqual(t.type(), 'torch.ComplexFloatTensor')
-
     @unittest.skipIf(not TEST_CUDA, "CUDA not found")
     def test_half_support(self):
         """
@@ -721,7 +708,6 @@ class TestCppExtensionJIT(common.TestCase):
         cpp_tensor_name = r"CPUDoubleType"
 
         # Without error handling, the warnings cannot be catched
-        # and the Tensor type names are not cleaned
         warn_mod = torch.utils.cpp_extension.load_inline(name='warn_mod',
                                                          cpp_sources=[source],
                                                          functions=['foo'],
@@ -731,12 +717,11 @@ class TestCppExtensionJIT(common.TestCase):
             warn_mod.foo(t, 0)
             self.assertEqual(len(w), 0)
 
-            # pybind translate all our errors to RuntimeError
-            with self.assertRaisesRegex(RuntimeError, cpp_tensor_name):
+            with self.assertRaisesRegex(TypeError, t.type()):
                 warn_mod.foo(t, 1)
             self.assertEqual(len(w), 0)
 
-            with self.assertRaisesRegex(RuntimeError, "bad argument to internal function|python_error"):
+            with self.assertRaisesRegex(SystemError, "bad argument to internal function"):
                 warn_mod.foo(t, 2)
             self.assertEqual(len(w), 0)
 

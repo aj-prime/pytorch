@@ -125,9 +125,6 @@ std::shared_ptr<FutureMessage> sendMessageWithAutograd(
 
   auto fut = agent.send(dst, std::move(msg));
   if (rf != nullptr) {
-    // save the local threadId so that end() callbacks can be correctly invoked
-    // from a different thread.
-    rf->setThreadId();
     // Add a callback to
     // the future that captures the RecordFunction to persist it for the
     // lifetime of the future. When the future is completed, this will run the
@@ -137,7 +134,7 @@ std::shared_ptr<FutureMessage> sendMessageWithAutograd(
         [rf](
             const Message& /* unused */,
             const c10::optional<utils::FutureError>& /* unused */) {
-          rf->end();
+          rf->_end();
         });
   }
   return fut;
